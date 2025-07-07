@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { confirmAlert } from 'react-confirm-alert';
+import 'react-confirm-alert/src/react-confirm-alert.css';
 import './table.css';
 import {
     FaPlus,
@@ -8,12 +10,14 @@ import {
     FaDiscord,
     FaSlack,
     FaMarkdown,
+    FaSync,
 } from 'react-icons/fa';
 
 const Table = () => {
     const [columns, setColumns] = useState(['Column 1']);
     const [rows, setRows] = useState([['']]);
     const [headers, setHeaders] = useState(['Header 1']);
+    const [focus, setFocus] = useState(null);
 
     const addColumn = () => {
         setColumns([...columns, `Column ${columns.length + 1}`]);
@@ -31,6 +35,8 @@ const Table = () => {
 
     const addRow = () => {
         setRows([...rows, Array(columns.length).fill('')]);
+        // Trigger focus after state update
+        setFocus({ type: 'row' });
     };
 
     const removeRow = () => {
@@ -38,6 +44,11 @@ const Table = () => {
             setRows(rows.slice(0, -1));
         }
     };
+    const clearTable = () => {
+        setColumns(['Column 1']);
+        setHeaders(['Header 1']);
+        setRows([['']]);
+    }
 
     const handleCellChange = (rowIndex, colIndex, value) => {
         const newRows = rows.map((row, rIdx) =>
@@ -105,9 +116,96 @@ const Table = () => {
         });
     };
 
+    const isTabularDataType = (clipboardData) => {
+        if (clipboardData.indexOf('\t') !== -1) {
+            // excel style tab delimited data
+            let rows = clipboardData.split('\n');
+            rows = rows.map((row) => row.split('\t'));
+
+            if (rows === clipboardData) return false;
+
+            return 'tsv';
+        } else if (clipboardData.indexOf(',') !== -1) {
+            // csv style comma delimited data
+            let rows = clipboardData.split('\n');
+            rows = rows.map((row) => row.split(','));
+
+            if (rows === clipboardData) return false;
+
+            return 'csv';
+        } else if (clipboardData.indexOf('|') !== -1) {
+            // markdown style pipe delimited data
+            let rows = clipboardData.split('\n');
+            rows = rows.map((row) => {
+                let tempRow = row.replace(/^\|+|\|+$/g, '').split('|');
+                if (tempRow === row) return false;
+                return tempRow;
+            });
+
+            let filteredRows = rows.filter((row) => row[0].trim().indexOf('+--') !== 0);
+
+            if (filteredRows.length === 0) return false;
+
+            if (filteredRows === clipboardData) return false;
+
+            return 'pipe';
+        }
+
+        return false;
+    };
+
+    const doTablePaste = (pastedData, dataType) => {
+        let rowsData = [], newHeaders = [], newRows = [], headerDetected = false;
+
+        switch (dataType) {
+            case 'tsv': // excel style tab delimited data
+                rowsData = pastedData.split('\n');
+                newHeaders = rowsData[0].split('\t');
+                setHeaders(newHeaders);
+                newRows = rowsData.slice(1).map((row) => row.split('\t'));
+                setRows(newRows);
+                toast.success('Pasted data applied successfully.');
+                return [...newHeaders, ...newRows];
+                break;
+            case 'csv': // csv style comma delimited data
+                rowsData = pastedData.split('\n');
+                newHeaders = rowsData[0].split(',');
+                setHeaders(newHeaders);
+                newRows = rowsData.slice(1).map((row) => row.split(','));
+                setRows(newRows);
+                toast.success('Pasted data applied successfully.');
+                return [...newHeaders, ...newRows];
+                break;
+            case 'pipe': // markdown style pipe delimited data
+                rowsData = pastedData.split('\n');
+                if (rowsData[2].indexOf('+--') === 0) { let headerDetected = true; }
+                rowsData = rowsData.map((row, index) => {
+                    row = row.replace(/^\|+|\|+$/g, '').split('|');
+                    row = row.map((cell) => cell.trim());
+                    return row;
+                });
+                rowsData = rowsData.filter((row) => row[0].indexOf('+--') !== 0);
+
+                if (rowsData.length === 0) return false;
+
+                if (headerDetected) { newHeaders = rowsData.slice(1); }
+                setHeaders(newHeaders);
+                newRows = rowsData.slice(headerDetected ? 1 : 0);
+                setRows(newRows);
+                toast.success('Pasted data applied successfully.');
+                return [...newHeaders, ...newRows];
+                break;
+            default:
+                toast.error('Unsupported data format for pasting.');
+                return false;
+        }
+    };
+
+    // Handle keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (event) => {
             if (event.ctrlKey) {
+                if ('arsdmlk'.indexOf(event.key) !== -1 || ['Delete'].includes(event.key)) { event.preventDefault(); }
                 switch (event.key) {
                     case 'a':
                         addColumn();
@@ -128,6 +226,69 @@ const Table = () => {
                     case 'k':
                         copyForMessagingPlatform();
                         break;
+                    case 'Delete':
+                        // Ctrl + Del causes hard reset.  Ignores focus.
+                        clearTable();
+                        break;
+                    case 'Enter':
+                        // Control + Enter uses default textarea behavior.  Do nothing.
+                        break;
+                    default:
+                        break;
+                }
+            } else if (event.shiftKey && ['Enter'].includes(event.key)) {
+                // Default behavior for Shift + Enter in textarea is to add a newline.  Do nothing.
+            } else if (['Delete', 'Tab', 'Enter'].includes(event.key)) {
+                const activeElement = document.activeElement;
+                const isTextArea = activeElement.tagName === 'TEXTAREA';
+                let isLastColumn = false;
+                let isLastRow = false;
+                let activeParent1, activeParent2, activeParent3;
+                let rowIndex = undefined;
+                let columnIndex = undefined;
+
+                if (isTextArea) {
+                    activeParent1 = activeElement.parentElement; // <td>
+                    activeParent2 = activeParent1.parentElement; // <tr>
+                    activeParent3 = activeParent2.parentElement; // <tbody>
+
+                    isLastColumn = (activeParent1 === activeParent2.lastElementChild) ? true : false;
+                    isLastRow = (activeParent2 === activeParent3.lastElementChild) ? true : false;
+
+                    rowIndex = Array.from(activeParent3.children).indexOf(activeParent2);
+                    columnIndex = Array.from(activeParent2.children).indexOf(activeParent1);
+                }
+
+                switch (event.key) {
+                    case 'Delete':
+                        // Check if the focused element is an input or textarea
+                        if (!isTextArea) {
+                            clearTable();
+                        }
+                        break;
+                    case 'Tab':
+                        // Allow tab navigation within the table
+                        if (isTextArea) {
+                            // Check if the parent <td> is the last child in its row
+                            if (isLastColumn) {
+                                // event.preventDefault(); // Prevent default tab behavior
+                                addColumn(); // Add a new column
+                            }
+                        }
+                        break;
+                    case 'Enter':
+                        event.preventDefault();
+
+                        // Add a new row if focused in the last row of the table
+                        if (isTextArea) {
+                            if (isLastRow) {
+                                addRow();
+                            } else {
+                                // Move focus to the next row
+                                setFocus({ type: 'row', rowIndex: rowIndex + 1, columnIndex: columnIndex });
+                            }
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -139,6 +300,64 @@ const Table = () => {
             window.removeEventListener('keydown', handleKeyDown);
         };
     }, [columns, rows, headers]);
+
+    // Handle paste events
+    useEffect(() => {
+        const handlePaste = async (event) => {
+            try {
+                const pastedData = await navigator.clipboard.readText();
+                const dataType = isTabularDataType(pastedData);
+
+                if (pastedData && dataType) {
+                    confirmAlert({
+                        title: 'Confirm Paste',
+                        message: 'Do you want to overwrite the current table with the pasted data?',
+                        buttons: [
+                            {
+                                label: 'Yes',
+                                onClick: () => doTablePaste(pastedData, dataType),
+                            },
+                            {
+                                label: 'No',
+                                onClick: () => false,
+                            },
+                        ],
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to read clipboard contents: ', error);
+                toast.error('Failed to read clipboard contents.');
+            }
+        }
+
+        window.addEventListener('paste', handlePaste);
+        return () => {
+            window.removeEventListener('paste', handlePaste);
+        };
+    }, []);
+
+    // Handle focus
+    useEffect(() => {
+        if (focus) {
+            let targetElement = null;
+
+            if (focus.rowIndex !== undefined && focus.columnIndex !== undefined) {
+                targetElement = document.querySelector(
+                    `tbody tr:nth-child(${focus.rowIndex + 1}) td:nth-child(${focus.columnIndex + 1}) textarea`
+                );
+            } else {
+                targetElement = document.querySelector(
+                    `tbody tr:last-child td:first-child textarea`
+                );
+            }
+
+            if (targetElement) {
+                targetElement.focus();
+            }
+
+            setFocus(null); // Reset focus state after applying
+        }
+    }, [focus]);
 
     return (
         <div className="table-container">
@@ -155,6 +374,9 @@ const Table = () => {
                 </button>
                 <button onClick={removeRow}>
                     <FaMinus /> Remove Row (Ctrl + D)
+                </button>
+                <button onClick={clearTable}>
+                    <FaSync /> Clear Table (Ctrl + Del)
                 </button>
             </div>
             <div className="button-row">
